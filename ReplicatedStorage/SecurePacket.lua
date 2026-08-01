@@ -47,10 +47,12 @@
 	9. That's it, as you probably understand now, you can do the exact same thing but Server -> Client, there is also a FireAllClients option!
 --]]
 
+-- Services
 const RunService = game:GetService("RunService")
 const ReplicatedStorage = game:GetService("ReplicatedStorage")
 const EncodingService = game:GetService("EncodingService")
 
+-- Requires helper modules 
 const BufferWriter = require(script.BufferWriter)
 const BufferReader = require(script.BufferReader)
 const Schemas = require(script.Schemas)
@@ -59,7 +61,7 @@ const Types = require(script.Types)
 type Schema = Types.Schema
 type PacketDefinition = Types.PacketDefinition
 
-const IS_SERVER = RunService:IsServer()
+const IS_SERVER = RunService:IsServer() -- Utilizes RunService to determine whether the current execution context is Server or Client
 
 const REMOTE_NAME = "ILoveHiddenDevsRemote" -- Just for jokes, it's normally called SecurePacketRemote but wtv
 const COMPRESSION_THRESHOLD = 512 -- *Bytes*
@@ -69,7 +71,7 @@ const COMPRESSION_ALGORITHM = Enum.CompressionAlgorithm.Zstd --  The only Compre
 
 const COMPRESSION_LEVEL = 1 -- * min: -22, max: 22 *
 
-local function getRemote(): RemoteEvent -- Gets the RemoteEvent if it already exists, otherwise it creates a new one
+local function getRemote(): RemoteEvent -- Gets the RemoteEvent if it already exists, otherwise it creates a new one. Should the existing object not be of type RemoteEvent, it also outputs an error message
 	if IS_SERVER then
 		local existing = ReplicatedStorage:FindFirstChild(
 			REMOTE_NAME
@@ -84,7 +86,7 @@ local function getRemote(): RemoteEvent -- Gets the RemoteEvent if it already ex
 			return existing
 		end
 
-		local created = Instance.new("RemoteEvent")
+		local created = Instance.new("RemoteEvent") -- Creates the new RemoteEvent if it does not already eixst
 		created.Name = REMOTE_NAME
 		created.Parent = ReplicatedStorage
 
@@ -94,10 +96,13 @@ local function getRemote(): RemoteEvent -- Gets the RemoteEvent if it already ex
 	return ReplicatedStorage:WaitForChild(REMOTE_NAME) :: RemoteEvent -- Casts it to a RemoteEvent to fulfill the return type of the function ;)
 end
 
-local remote = getRemote()
+local remote = getRemote() -- Calls the getRemote() function above which handles the logic of wheter or not it already exists to prevent duplicates
 
 local SecurePacket = {}
 
+--[[
+	Dictionaries acting as registries, definitionsByName and definitionsById store them as a string and number while serverHandlers and clientHandlers store callback functions
+--]]
 local definitionsByName: {
 	[string]: PacketDefinition
 } = {}
@@ -114,68 +119,71 @@ local clientHandlers: {
 	[string]: (...any) -> ()
 } = {}
 
-local nextPacketId = 0 -- Super fancy counter...
+local nextPacketId = 0 -- Super fancy counter... (for making sure every packet gets a unique id)
 
 function SecurePacket.Define(packetName: string, schema: { Schema }): PacketDefinition -- Creates a new PacketDefinition based on the schema
-	assert(
+	assert( -- Makes sure packetName is of type string and that the string is not empty (#packetName > 0), if not, outputs an error message
 		type(packetName) == "string"
 			and #packetName > 0,
 		"SecurePacket - Packet name must be a non-empty string"
 	)
 
-	assert(
+	assert( -- Makes sure that the packetName does not already exist in the lookup tables (as explained above, they act as registries)
 		definitionsByName[packetName] == nil,
 		`SecurePacket - Packet "{packetName}" is already defined`
 	)
 
-	assert(
+	assert( -- Makes sure the packetId does not go above 65535 which is the maximum number an unsigned 16 bit integer can hold...
 		nextPacketId <= 65535,
 		"SecurePacket - Packet has exceeded its UInt16 packet ID limit" -- If this happens you're doing something wrong 😭
 	)
 
-	local definition: PacketDefinition = {
+	local definition: PacketDefinition = { -- Self explanatory, creates a PacketDefinition and fills its attributes with the values parsed into the function
 		Id = nextPacketId,
 		Name = packetName,
 		Schema = schema,
 	}
 
-	nextPacketId += 1
+	nextPacketId += 1 -- increments the counter
 
+	--[[
+		Adds the packet name and packet id into the lookup tables / registries to ensure no other packet is created with the same id / name
+	--]]
 	definitionsByName[packetName] = definition
 	definitionsById[definition.Id] = definition
 
 	return definition
 end
 
-local function encodePacket(definition: PacketDefinition, arguments: { [number]: any } & { n: number }): buffer
-	assert(arguments.n == #definition.Schema, `Packet "{definition.Name}" expected {#definition.Schema} arguments, got {arguments.n}`) -- Maybe I should have used a line break here
+local function encodePacket(definition: PacketDefinition, arguments: { [number]: any } & { n: number }): buffer -- Converts the data inside a packet into binary using buffers
+	assert(arguments.n == #definition.Schema, `Packet "{definition.Name}" expected {#definition.Schema} arguments, got {arguments.n}`) -- Maybe I should have used a line break here, it makes sure that you actually parse as many values as were pre-defined in the schema
 
-	local writer = BufferWriter.new()
+	local writer = BufferWriter.new() -- creates a new BufferWriter
 	local context = {
 		Depth = 0,
 	}
 
-	for index, fieldSchema in definition.Schema do
-		local success, problem = pcall(
-			fieldSchema.Write,
+	for index, fieldSchema in definition.Schema do -- iterates through every field in the packet schema
+		local success, problem = pcall( -- uses pcall to catch an error if one occurs
+			fieldSchema.Write, -- calls fieldSchema.Write with writer, arguments[index] and context as the function parameters
 			writer,
 			arguments[index],
 			context
 		)
 
-		if not success then
+		if not success then -- outputs an error explaining that there was a problem when encoding the packet
 			error(`Failed to encode argument {index} of "{definition.Name}" as {fieldSchema.Name}: {problem}`, 3)
 		end
 	end
 
-	return writer:ToBuffer()
+	return writer:ToBuffer() -- returns the final buffer
 end
 
-local function decodePacket(
+local function decodePacket( -- converts the data inside a packet that is already in binary back to normal data
 	definition: PacketDefinition,
 	data: buffer
 ): { [number]: any } & { n: number }
-	local reader = BufferReader.new(data)
+	local reader = BufferReader.new(data) -- creates a new BufferReader and includes the data (buffer) to read
 	local context = {
 		Depth = 0,
 	}
@@ -183,56 +191,56 @@ local function decodePacket(
 	local arguments = table.create(#definition.Schema)
 	arguments.n = #definition.Schema
 
-	for index, fieldSchema in definition.Schema do
-		local success, value = pcall(
-			fieldSchema.Read,
+	for index, fieldSchema in definition.Schema do -- iterates through all fields in the packet schema
+		local success, value = pcall( -- using pcall to catch an error should one occur
+			fieldSchema.Read, -- calls fieldSchema.Read with the reader and context as function parameters
 			reader,
 			context
 		)
 
-		if not success then
+		if not success then -- outputs an error that there was a problem when decoding the packet
 			error(`Failed to decode argument {index} of "{definition.Name}" as {fieldSchema.Name}: {value}`)
 		end
 
 		arguments[index] = value
 	end
 
-	assert(reader:IsFinished(), `Packet "{definition.Name}" contains trailing bytes`)
+	assert(reader:IsFinished(), `Packet "{definition.Name}" contains trailing bytes`) -- If the reader does not finish reading all bytes, it outputs an error
 
-	return arguments
+	return arguments -- returns the "normalized" data
 end
 
 local function compressPayload(data: buffer): (buffer, boolean) -- Uses EncodingService to compress the buffer
-	if buffer.len(data) < COMPRESSION_THRESHOLD then
+	if buffer.len(data) < COMPRESSION_THRESHOLD then -- Skips compression if the packet is too small (not worth the cpu usage)
 		return data, false
 	end
 
-	local compressed = EncodingService:CompressBuffer(
+	local compressed = EncodingService:CompressBuffer( -- Compresses the buffer using the compression algo and compression level which are defined at the top of this module
 		data,
 		COMPRESSION_ALGORITHM,
 		COMPRESSION_LEVEL
 	)
 
-	if buffer.len(compressed) >= buffer.len(data) then
+	if buffer.len(compressed) >= buffer.len(data) then -- If the compressed version of the buffer is bigger than the non-compressed version, it returns the non-compressed version (This should honestly not happen normally...)
 		return data, false
 	end
 
-	return compressed, true
+	return compressed, true -- Returns the compressed buffer
 end
 
 local function decompressPayload(payload: any, isCompressed: any): buffer -- Uses EncodingService to decompress the buffer
-	assert(
+	assert( -- Should the payload not be of type buffer, it outputs an error
 		typeof(payload) == "buffer",
 		"Payload must be a buffer"
 	)
 
-	assert(
+	assert( -- Should isCompressed not be a boolean for whatever reason, it outputs an error
 		type(isCompressed) == "boolean",
 		"Compression flag must be a boolean"
 	)
 
-	if not isCompressed then
-		assert(buffer.len(payload) <= MAX_PAYLOAD_SIZE, "Payload exceeds the size limit")
+	if not isCompressed then -- if the buffer is not compressed, we simply return it as it is, since it does not need to be decompressed
+		assert(buffer.len(payload) <= MAX_PAYLOAD_SIZE, "Payload exceeds the size limit") -- Outputs an error if the buffer is too big
 
 		return payload
 	end
@@ -240,22 +248,25 @@ local function decompressPayload(payload: any, isCompressed: any): buffer -- Use
 	local decompressedSize =
 		EncodingService:GetDecompressedBufferSize(payload, COMPRESSION_ALGORITHM) -- I'm so happy they let you get the Decompressed size without having to decompress it
 
-	assert(
+	assert( -- Checks if the decompressedSize of the buffer is nil, if yes, it outputs an error
 		decompressedSize ~= nil,
 		"Compressed payload is invalid"
 	)
 
-	assert(
+	assert( -- Checks if the decompressed buffer is too big, if yes, it outputs an error
 		decompressedSize <= MAX_PAYLOAD_SIZE,
 		"Decompressed payload exceeds the size limit"
 	)
 
-	return EncodingService:DecompressBuffer(
+	return EncodingService:DecompressBuffer( -- Decompressed the buffer using the same algo we used to compress it
 		payload,
 		COMPRESSION_ALGORITHM
 	)
 end
 
+--[[
+	Defines the type PacketObject, which contains all relevant information about a Packet, including callback functions
+--]]
 type PacketObject = {
 	Definition: PacketDefinition,
 	Arguments: { [number]: any } & { n: number },
@@ -273,7 +284,7 @@ type PacketObject = {
 local Packet = {}
 Packet.__index = Packet
 
-local function encodePacketObject(self: PacketObject): (buffer, boolean) -- Helper function
+local function encodePacketObject(self: PacketObject): (buffer, boolean) -- Helper function that allows you to parse a PacketObject and get the encoded buffer as well as whether or not it was actually compressed 
 	local encoded = encodePacket(
 		self.Definition,
 		self.Arguments
@@ -291,51 +302,51 @@ function Packet:GetEncodedSize(): number -- Returns the size of the encoded pack
 	return buffer.len(encoded)
 end
 
-function Packet:FireServer()
-	assert(not IS_SERVER, "FireServer can only be called from the client") -- Check if the function is called from the client
+function Packet:FireServer() -- FireServer implementation for Packets
+	assert(not IS_SERVER, "FireServer can only be called from the client") -- Check if the function is called from the client, if not, it ouputs an error
 
-	local payload, compressed = encodePacketObject(self)
+	local payload, compressed = encodePacketObject(self) -- encodes and compresses the content of the Packet (only if it hasnt already be done)
 
-	remote:FireServer(self.Definition.Id, payload, compressed)
+	remote:FireServer(self.Definition.Id, payload, compressed) -- fires the remote containing the data to the server
 end
 
-function Packet:FireClient(player: Player)
-	assert(IS_SERVER, "FireClient can only be called from the server") -- Check if the function is called from the server
+function Packet:FireClient(player: Player) -- FireClient implementation for Packets
+	assert(IS_SERVER, "FireClient can only be called from the server") -- Check if the function is called from the server, if not, it outputs an error
 
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "FireClient requires a Player") -- Makes sure the remote is being fired to a valid player
 
-	local payload, compressed = encodePacketObject(self)
+	local payload, compressed = encodePacketObject(self) -- encodes and compresses the content of the packet (only if not already done)
 
-	remote:FireClient(player, self.Definition.Id, payload, compressed)
+	remote:FireClient(player, self.Definition.Id, payload, compressed) --  fires the remote containing the data to the client
 end
 
-function Packet:FireAllClients()
+function Packet:FireAllClients() -- FireAllClients implementation for Packets
 	assert(IS_SERVER, "FireAllClients can only be called from the server") -- Yeah I think you get the idea by now
 
-	local payload, compressed = encodePacketObject(self)
+	local payload, compressed = encodePacketObject(self) -- Just read the documentation in FireServer or FireClient
 
-	remote:FireAllClients(self.Definition.Id, payload, compressed)
+	remote:FireAllClients(self.Definition.Id, payload, compressed) -- fires the remote containing the data to all clients
 end
 
 function SecurePacket.OnServer(packetName: string, handler: (Player, ...any) -> ()): () -> () -- Creates a server Listener on the client for a packet (Same as RemoteEvent.OnServerEvent). Clarification: Function returns an anonymous function with no args or return type
-	assert(
+	assert( -- Makes sure it gets called by the server, if not, it outputs an error
 		IS_SERVER,
 		"OnServer can only be called from the server"
 	)
 
-	assert(
+	assert( -- Checks if the registry already contains that packetName, if not, it outputs an error
 		definitionsByName[packetName] ~= nil,
 		`Packet "{packetName}" has not been defined`
 	)
 
-	assert(
+	assert( -- Checks if the registry already contains a server handler for that packet, if it does, it outputs an error
 		serverHandlers[packetName] == nil,
 		`Packet "{packetName}" already has a server handler`
 	)
 
-	serverHandlers[packetName] = handler
+	serverHandlers[packetName] = handler -- adds the server handler to the registry so there cant be multiple for the same packet
 
-	return function()
+	return function() -- returns a closure to allow for unregistering the handler later
 		if serverHandlers[packetName] == handler then
 			serverHandlers[packetName] = nil
 		end
@@ -343,15 +354,15 @@ function SecurePacket.OnServer(packetName: string, handler: (Player, ...any) -> 
 end
 
 function SecurePacket.OnClient(packetName: string, handler: (...any) -> ()): () -> () -- Creates a Listener on the server for a packet (Same as RemoteEvent.OnClientEvent)
-	assert(not IS_SERVER, "OnClient can only be called from the client")
+	assert(not IS_SERVER, "OnClient can only be called from the client") -- Makes sure it gets called by the client, if not, it outputs an error
 
-	assert(definitionsByName[packetName] ~= nil, `Packet "{packetName}" has not been defined`)
+	assert(definitionsByName[packetName] ~= nil, `Packet "{packetName}" has not been defined`) -- Checks if the registry already contains that packetName, if not, it outputs an error
 
-	assert(clientHandlers[packetName] == nil, `Packet "{packetName}" already has a client handler`)
+	assert(clientHandlers[packetName] == nil, `Packet "{packetName}" already has a client handler`) -- Checks if the registry already contains a client handler for that packet, if it does, it outputs an error
 
-	clientHandlers[packetName] = handler
+	clientHandlers[packetName] = handler -- adds the client handler to the registry so there cant be multiple for the same packet
 
-	return function()
+	return function() -- returns a closure to allow for unregistering the handler later
 		if clientHandlers[packetName] == handler then
 			clientHandlers[packetName] = nil
 		end
@@ -361,14 +372,17 @@ end
 local function createPacket(packetName: string, ...: any): PacketObject -- Creates a packet with a name and optional arguments
 	local definition = definitionsByName[packetName]
 
-	assert(definition ~= nil, `Packet "{packetName}" has not been defined`)
+	assert(definition ~= nil, `Packet "{packetName}" has not been defined`) -- Checks if the packet name has already been registered, if not, it throws an error
 
-	return setmetatable({
+	return setmetatable({ -- creates and returns the new packet object
 		Definition = definition,
 		Arguments = table.pack(...),
 	}, Packet) :: any
 end
 
+--[[
+	Makes it possible to create a packet by doing SecurePacket(...) instead of having to do SecurePacket.createPacket(...), so basically its a constructor
+--]]
 setmetatable(SecurePacket, {
 	__call = function(
 		_,
@@ -381,7 +395,7 @@ setmetatable(SecurePacket, {
 
 if IS_SERVER then	-- Redirects server RemoteEvent calls to the server listener (if there is one)
 	remote.OnServerEvent:Connect(function(player: Player, packetId: any, payload: any, compressed: any)
-		if type(packetId) ~= "number"
+		if type(packetId) ~= "number" -- Makes sure packetId is of type number and that its a whole number
 			or packetId % 1 ~= 0
 		then
 			return
@@ -389,28 +403,28 @@ if IS_SERVER then	-- Redirects server RemoteEvent calls to the server listener (
 
 		local definition = definitionsById[packetId]
 
-		if not definition then
+		if not definition then -- Makes sure the id is registered
 			return
 		end
 
 		local handler = serverHandlers[definition.Name]
 
-		if not handler then
+		if not handler then -- Makes sure a handler is registered
 			return
 		end
 
-		local success, problem = pcall(function()
-			local restored = decompressPayload(
+		local success, problem = pcall(function() -- Pcall to make sure if any of the three steps below fail, that it outputs an error
+			local restored = decompressPayload( -- Decompresses the packet if it was compressed
 				payload,
 				compressed
 			)
 
-			local arguments = decodePacket(
+			local arguments = decodePacket( -- Converts it from bytes to Luau values
 				definition,
 				restored
 			)
 
-			handler(
+			handler( -- Calls the packets registered handler
 				player,
 				table.unpack(
 					arguments,
@@ -421,10 +435,10 @@ if IS_SERVER then	-- Redirects server RemoteEvent calls to the server listener (
 		end)
 
 		if not success then
-			warn(`SecurePacket rejected "{definition.Name}" from {player.Name}: {problem}`)
+			warn(`SecurePacket rejected "{definition.Name}" from {player.Name}: {problem}`) -- outputs an error if there was one
 		end
 	end)
-else -- Redirects client RemoteEvent calls to the client listener (again, if there is one)
+else -- Redirects client RemoteEvent calls to the client listener (again, if there is one) Same documentation as above btw
 	remote.OnClientEvent:Connect(function(packetId: any, payload: any, compressed: any)
 		if type(packetId) ~= "number"
 			or packetId % 1 ~= 0
