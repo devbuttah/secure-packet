@@ -1,14 +1,10 @@
 --!strict
 
--- Roblox Username: devbuddah / devbuttah (main, currently suspended) 
--- Discord: devbuttah (1183123383693627557)
-
 --[[ 
 	Fun little project mostly for personal use to reduce network load when dealing with things like sending large amounts of data (like inventories, etc.)
 	Inspired by "Packet" which was made by @5uphi
 	No code was copied, just inspiration for the actual functionality / usage of the module!
 	Plans for the future: Add DDOS-Protection (Rate Limiting Client -> Server), Add some sort of encryption (Obviously can be reverse-engineered easily since the client has to be able to encrypt / decrypt, just would make it harder for the average exploiter)
-	Thanks for taking your time to review this, please don't take all comments too seriously, some are joke-ish.
 --]]
 
 --[[
@@ -63,7 +59,7 @@ type PacketDefinition = Types.PacketDefinition
 
 const IS_SERVER = RunService:IsServer() -- Utilizes RunService to determine whether the current execution context is Server or Client
 
-const REMOTE_NAME = "ILoveHiddenDevsRemote" -- Just for jokes, it's normally called SecurePacketRemote but wtv
+const REMOTE_NAME = "SecurePacketRemote"
 const COMPRESSION_THRESHOLD = 512 -- *Bytes*
 const MAX_PAYLOAD_SIZE = 1024 * 1024 -- *Bytes*
 
@@ -135,7 +131,7 @@ function SecurePacket.Define(packetName: string, schema: { Schema }): PacketDefi
 
 	assert( -- Makes sure the packetId does not go above 65535 which is the maximum number an unsigned 16 bit integer can hold...
 		nextPacketId <= 65535,
-		"SecurePacket - Packet has exceeded its UInt16 packet ID limit" -- If this happens you're doing something wrong 😭
+		"SecurePacket - Packet has exceeded its UInt16 packet ID limit"
 	)
 
 	local definition: PacketDefinition = { -- Self explanatory, creates a PacketDefinition and fills its attributes with the values parsed into the function
